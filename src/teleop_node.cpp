@@ -5,8 +5,10 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/parameter_client.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -21,9 +23,11 @@ public:
     declare_parameter<double>("pitch_rate_cmd", 0.25);
     declare_parameter<double>("yaw_rate_cmd", 0.5);
     declare_parameter<double>("publish_hz", 20.0);
+    declare_parameter<double>("pid_step", 0.001);
 
     pitch_rate_cmd_ = get_parameter("pitch_rate_cmd").as_double();
     yaw_rate_cmd_ = get_parameter("yaw_rate_cmd").as_double();
+    pid_step_ = get_parameter("pid_step").as_double();
 
     body_rate_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
       "/control/teleop_body_rate_raw", 10);
@@ -36,6 +40,9 @@ public:
     vehicle_command_pub_ = create_publisher<std_msgs::msg::String>(
       "/control/vehicle_command", 10);
 
+    controller_param_client_ =
+      std::make_shared<rclcpp::AsyncParametersClient>(this, "/controller_node");
+
     const auto period =
       std::chrono::duration<double>(1.0 / get_parameter("publish_hz").as_double());
 
@@ -46,7 +53,10 @@ public:
     setup_terminal();
 
     RCLCPP_INFO(get_logger(), "teleop_bodyrate_node started");
-    RCLCPP_INFO(get_logger(), "w/s: pitch  a/d: yaw  q/e: roll  u/i: alt  y: arm  m: quit");
+    RCLCPP_INFO(
+      get_logger(),
+      "w/s: pitch  a/d: yaw  q/e: roll  u/i: alt  y: arm  o/p: atteck on/off  "
+      "g/h/j: P/I/D +  b/n/m: P/I/D -  x: quit");
   }
 
   ~TeleopBodyrateNode() override
@@ -91,6 +101,51 @@ private:
     return false;
   }
 
+  void adjust_controller_param(const std::string & name, double delta)
+  {
+    if (!controller_param_client_->service_is_ready()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "controller parameter service is not ready");
+      return;
+    }
+
+    auto future = controller_param_client_->get_parameters({name});
+    if (future.wait_for(std::chrono::milliseconds(200)) != std::future_status::ready) {
+      RCLCPP_WARN(get_logger(), "failed to read controller parameter: %s", name.c_str());
+      return;
+    }
+
+    const auto params = future.get();
+    if (params.empty()) {
+      RCLCPP_WARN(get_logger(), "controller parameter not found: %s", name.c_str());
+      return;
+    }
+
+    const double current_value = params[0].as_double();
+    const double new_value = current_value + delta;
+
+    auto set_future = controller_param_client_->set_parameters({
+      rclcpp::Parameter(name, new_value)
+    });
+
+    if (set_future.wait_for(std::chrono::milliseconds(200)) != std::future_status::ready) {
+      RCLCPP_WARN(get_logger(), "failed to set controller parameter: %s", name.c_str());
+      return;
+    }
+
+    const auto results = set_future.get();
+    if (results.empty() || !results[0].successful) {
+      RCLCPP_WARN(
+        get_logger(),
+        "controller parameter update rejected: %s",
+        name.c_str());
+      return;
+    }
+
+    RCLCPP_INFO(get_logger(), "%s = %.6f", name.c_str(), new_value);
+  }
+
   void timer_callback()
   {
     double roll_rate = 0.0;
@@ -132,13 +187,13 @@ private:
       case 'U':
         last_hover_alt_ += hover_alt_cmd_;
         hv.data = last_hover_alt_;
-        RCLCPP_INFO(get_logger(), "alt : %f", last_hover_alt_);
+        RCLCPP_INFO(get_logger(), "alt = %.3f", last_hover_alt_);
         break;
       case 'i':
       case 'I':
         last_hover_alt_ -= hover_alt_cmd_;
         hv.data = last_hover_alt_;
-        RCLCPP_INFO(get_logger(), "alt : %f", last_hover_alt_);
+        RCLCPP_INFO(get_logger(), "alt = %.3f", last_hover_alt_);
         break;
       case 'o':
       case 'O':
@@ -148,11 +203,6 @@ private:
       case 'P':
         atteck_cmd_ = false;
         break;
-      case 'm':
-      case 'M':
-        RCLCPP_INFO(get_logger(), "quit requested");
-        rclcpp::shutdown();
-        return;
       case 'y':
       case 'Y':
       {
@@ -162,6 +212,35 @@ private:
         RCLCPP_INFO(get_logger(), "arm command published");
         break;
       }
+      case 'g':
+      case 'G':
+        adjust_controller_param("kp_z", +pid_step_);
+        break;
+      case 'h':
+      case 'H':
+        adjust_controller_param("ki_z", +pid_step_);
+        break;
+      case 'j':
+      case 'J':
+        adjust_controller_param("kd_z", +pid_step_);
+        break;
+      case 'b':
+      case 'B':
+        adjust_controller_param("kp_z", -pid_step_);
+        break;
+      case 'n':
+      case 'N':
+        adjust_controller_param("ki_z", -pid_step_);
+        break;
+      case 'm':
+      case 'M':
+        adjust_controller_param("kd_z", -pid_step_);
+        break;
+      case 'x':
+      case 'X':
+        RCLCPP_INFO(get_logger(), "quit requested");
+        rclcpp::shutdown();
+        return;
       default:
         break;
     }
@@ -175,10 +254,11 @@ private:
     msg.vector.z = yaw_rate;
     body_rate_pub_->publish(msg);
 
-    if(last_hover_alt_ != last_hover_cmd_){
+    if (last_hover_alt_ != last_hover_cmd_) {
       hover_alt_pub_->publish(hv);
       last_hover_cmd_ = last_hover_alt_;
     }
+
     std_msgs::msg::Bool at;
     at.data = atteck_cmd_;
     atteck_cmd_pub_->publish(at);
@@ -190,6 +270,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr atteck_cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr vehicle_command_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::AsyncParametersClient::SharedPtr controller_param_client_;
 
   termios original_termios_{};
   bool terminal_initialized_{false};
@@ -200,6 +281,7 @@ private:
   double hover_alt_cmd_{1.0};
   double last_hover_alt_{0.0};
   double last_hover_cmd_{0.0};
+  double pid_step_{0.001};
   bool atteck_cmd_{false};
   char last_key_{0};
 };
