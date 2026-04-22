@@ -101,49 +101,42 @@ private:
     return false;
   }
 
-  void adjust_controller_param(const std::string & name, double delta)
+  void adjust_controller_param(const std::string &name, double &local_value, double delta)
   {
-    if (!controller_param_client_->service_is_ready()) {
+    if (!controller_param_client_->service_is_ready())
+    {
       RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "controller parameter service is not ready");
+          get_logger(), *get_clock(), 2000,
+          "controller parameter service is not ready");
       return;
     }
 
-    auto future = controller_param_client_->get_parameters({name});
-    if (future.wait_for(std::chrono::milliseconds(200)) != std::future_status::ready) {
-      RCLCPP_WARN(get_logger(), "failed to read controller parameter: %s", name.c_str());
-      return;
-    }
+    local_value += delta;
 
-    const auto params = future.get();
-    if (params.empty()) {
-      RCLCPP_WARN(get_logger(), "controller parameter not found: %s", name.c_str());
-      return;
-    }
-
-    const double current_value = params[0].as_double();
-    const double new_value = current_value + delta;
-
-    auto set_future = controller_param_client_->set_parameters({
-      rclcpp::Parameter(name, new_value)
-    });
-
-    if (set_future.wait_for(std::chrono::milliseconds(200)) != std::future_status::ready) {
-      RCLCPP_WARN(get_logger(), "failed to set controller parameter: %s", name.c_str());
-      return;
-    }
-
-    const auto results = set_future.get();
-    if (results.empty() || !results[0].successful) {
-      RCLCPP_WARN(
-        get_logger(),
-        "controller parameter update rejected: %s",
-        name.c_str());
-      return;
-    }
-
-    RCLCPP_INFO(get_logger(), "%s = %.6f", name.c_str(), new_value);
+    controller_param_client_->set_parameters(
+        {rclcpp::Parameter(name, local_value)},
+        [this, name, value = local_value](auto future)
+        {
+          try
+          {
+            const auto results = future.get();
+            if (!results.empty() && results[0].successful)
+            {
+              RCLCPP_INFO(this->get_logger(), "%s = %.6f", name.c_str(), value);
+            }
+            else
+            {
+              RCLCPP_WARN(this->get_logger(), "failed to update %s", name.c_str());
+            }
+          }
+          catch (const std::exception &e)
+          {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "parameter update exception for %s: %s",
+                name.c_str(), e.what());
+          }
+        });
   }
 
   void timer_callback()
@@ -214,27 +207,27 @@ private:
       }
       case 'g':
       case 'G':
-        adjust_controller_param("kp_z", +pid_step_);
+        adjust_controller_param("kp_z", kp_z_, +pid_step_);
         break;
       case 'h':
       case 'H':
-        adjust_controller_param("ki_z", +pid_step_);
+        adjust_controller_param("ki_z", ki_z_, +pid_step_);
         break;
       case 'j':
       case 'J':
-        adjust_controller_param("kd_z", +pid_step_);
+        adjust_controller_param("kd_z", kd_z_, +pid_step_);
         break;
       case 'b':
       case 'B':
-        adjust_controller_param("kp_z", -pid_step_);
+        adjust_controller_param("kp_z", kp_z_, -pid_step_);
         break;
       case 'n':
       case 'N':
-        adjust_controller_param("ki_z", -pid_step_);
+        adjust_controller_param("ki_z", ki_z_, -pid_step_);
         break;
       case 'm':
       case 'M':
-        adjust_controller_param("kd_z", -pid_step_);
+        adjust_controller_param("kd_z", kd_z_, -pid_step_);
         break;
       case 'x':
       case 'X':
@@ -284,6 +277,10 @@ private:
   double pid_step_{0.001};
   bool atteck_cmd_{false};
   char last_key_{0};
+
+  double kp_z_{0.148};
+  double ki_z_{0.00};
+  double kd_z_{0.150};
 };
 
 int main(int argc, char ** argv)
