@@ -14,10 +14,10 @@ public:
   {
     declare_parameter<double>("publish_hz", 20.0);
     declare_parameter<double>("hover_thrust", 0.72);
-    declare_parameter<double>("kp_z", 0.05);
-    declare_parameter<double>("ki_z", 0.00);
-    declare_parameter<double>("kd_z", 0.015);
-    declare_parameter<double>("thrust_min", 0.70);
+    declare_parameter<double>("kp_z", 0.158);
+    declare_parameter<double>("ki_z", 0.0);
+    declare_parameter<double>("kd_z", 0.150);
+    declare_parameter<double>("thrust_min", 0.65);
     declare_parameter<double>("thrust_max", 0.75);
     declare_parameter<double>("vz_filter_alpha", 0.80);
     declare_parameter<double>("z_integral_limit", 0.3);
@@ -34,6 +34,8 @@ public:
     baro_altitude_sub_ = create_subscription<std_msgs::msg::Float32>(
         "/vehicle/baro_alt", 10,
         std::bind(&ControllerNode::baro_altitude_callback, this, std::placeholders::_1));
+
+    current_z_pub_ = create_publisher<std_msgs::msg::Float32>("/vehicle/alt_m", 10);
 
     body_rate_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>("/control/body_rate_cmd", 10);
 
@@ -96,12 +98,14 @@ private:
             (1.0 - vz_filter_alpha) * raw_vertical_velocity;
       }
     }
-
+    std_msgs::msg::Float32 alt;
+    alt.data = relative_altitude;
     current_z_ = relative_altitude;
     current_vz_ = vertical_velocity;
     last_baro_altitude_ = baro_altitude;
     last_baro_stamp_ = stamp;
     has_altitude_measurement_ = true;
+    current_z_pub_->publish(alt);
   }
 
   void hover_altitude_callback(const std_msgs::msg::Float32::SharedPtr msg)
@@ -191,6 +195,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr body_rate_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr thrust_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr command_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr current_z_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   geometry_msgs::msg::Vector3Stamped last_body_rate_input_{};
 
