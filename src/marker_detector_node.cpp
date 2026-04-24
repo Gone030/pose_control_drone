@@ -151,11 +151,11 @@ private:
 
   void timerCallback()
   {
-    RCLCPP_INFO(
-      get_logger(),
-      "frames=%zu detected_frames=%zu",
-      frame_count_,
-      detected_count_);
+    // RCLCPP_INFO(
+    //   get_logger(),
+    //   "frames=%zu detected_frames=%zu",
+    //   frame_count_,
+    //   detected_count_);
   }
 
 private:
