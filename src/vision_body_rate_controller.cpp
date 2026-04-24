@@ -21,20 +21,21 @@ public:
     declare_parameter<double>("roll_curve_gamma", 1.65);
 
     // 브레이크
-    declare_parameter<double>("brake_enter_px", 140.0);
+    declare_parameter<double>("base_brake_enter_px", 40.0);
+    declare_parameter<double>("brake_enter_roll_gain", 180.0);
     declare_parameter<double>("brake_cmd_mag", 0.25);
     declare_parameter<int>("brake_hold_ticks", 6);
     declare_parameter<double>("brake_release_roll_rad", 0.07);
     declare_parameter<double>("brake_size_threshold_px", 120.0);
 
-    declare_parameter<int>("reacquire_holdoff_ticks", 5);
+    declare_parameter<int>("reacquire_holdoff_ticks", 12);
 
     // 트래킹
     declare_parameter<double>("roll_kp", 0.004);
     declare_parameter<double>("pitch_kp", 0.004);
     declare_parameter<double>("max_roll_rate", 0.17);
     declare_parameter<double>("max_pitch_rate", 0.15);
-    declare_parameter<double>("deadband_x_px", 10.0);
+    declare_parameter<double>("deadband_x_px", 5.0);
     declare_parameter<double>("deadband_y_px", 10.0);
 
 
@@ -51,7 +52,8 @@ public:
     roll_min_rate_ = get_parameter("roll_min_rate").as_double();
     roll_curve_gamma_ = get_parameter("roll_curve_gamma").as_double();
 
-    brake_enter_px_ = get_parameter("brake_enter_px").as_double();
+    base_brake_enter_px_ = get_parameter("base_brake_enter_px").as_double();
+    brake_enter_roll_gain_ = get_parameter("brake_enter_roll_gain").as_double();
     brake_cmd_mag_ = get_parameter("brake_cmd_mag").as_double();
     brake_hold_ticks_ = get_parameter("brake_hold_ticks").as_int();
     brake_release_roll_rad_ = get_parameter("brake_release_roll_rad").as_double();
@@ -215,6 +217,13 @@ private:
       return true;
     }
 
+    // 1.5. roll 부호 뒤집힘
+    if (brake_entry_roll_ * roll_rad_ < 0.0) {
+
+      return true;
+
+    }
+
     // 2. ex가 다시 커지기 시작함
     if (std::abs(ex_) > std::abs(brake_prev_ex_) + 5.0) {
       return true;
@@ -258,17 +267,19 @@ private:
     if (mode_ == Mode::TRACK) {
       const auto track_cmd = computeTrackCommand();
 
-      const bool near_center = std::abs(ex_) < brake_enter_px_;
+      const double effective_brake_enter_px = base_brake_enter_px_ + brake_enter_roll_gain_ * std::abs(roll_rad_);
+      const bool near_center = std::abs(ex_) < effective_brake_enter_px;
       const bool tilted = std::abs(roll_rad_) > brake_release_roll_rad_;
       const bool has_roll_cmd = std::abs(track_cmd.x) > 1e-6;
 
       if (reacquire_ticks_left_ == 0 && near_center && tilted && has_roll_cmd) {
         mode_ = Mode::BRAKE;
         brake_ticks_left_ = brake_hold_ticks_;
-        brake_dir_ = -std::copysign(1.0, track_cmd.x);
+        brake_dir_ = -std::copysign(1.0, roll_rad_);
 
         brake_entry_ex_ = ex_;
         brake_prev_ex_ = ex_;
+        brake_entry_roll_ = roll_rad_;
         brake_started_ = true;
 
         out_msg.vector = computeBrakeCommand();
@@ -287,6 +298,8 @@ private:
         mode_ = Mode::TRACK;
         brake_dir_ = 0.0;
         brake_started_ = false;
+        reacquire_ticks_left_ = reacquire_holdoff_ticks_;
+        out_msg.vector = computeTrackCommand();
       } else {
         brake_prev_ex_ = ex_;
       }
@@ -294,6 +307,9 @@ private:
       if (brake_ticks_left_ <= 0 && std::abs(roll_rad_) < brake_release_roll_rad_) {
         mode_ = Mode::TRACK;
         brake_dir_ = 0.0;
+        brake_started_ = false;
+        reacquire_ticks_left_ = reacquire_holdoff_ticks_;
+        out_msg.vector = computeTrackCommand();
       }
     }
 
@@ -351,8 +367,11 @@ private:
 
   // 브레이크
   double brake_enter_px_{90.0};
+  double base_brake_enter_px_{0.0};
+  double brake_enter_roll_gain_{0.0};
   double brake_cmd_mag_{0.20};
   int brake_hold_ticks_{6};
+  double brake_entry_roll_{0.0};
   double brake_release_roll_rad_{0.08};
 
   double brake_dir_{0.0};
